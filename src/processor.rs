@@ -55,7 +55,6 @@ impl Process {
         msg!("Creating mint account...");
         msg!("mint_account: {:?}", mint_account.key);
 
-        // TODO 不懂ivoke是干嘛的
         invoke(
             &system_instruction::create_account(
                 payer.key,
@@ -100,7 +99,6 @@ impl Process {
         // 创建铸币账户
         let mint_account = next_account_info(account_iter)?;
         let associated_token_account = next_account_info(account_iter)?;
-        // TODO 这个到底是什么账户
         let rent_sysvar = next_account_info(account_iter)?;
         let payer = next_account_info(account_iter)?;
         let system_program = next_account_info(account_iter)?;
@@ -141,7 +139,6 @@ impl Process {
             &[payer.key],
             amount,
         )?;
-        // TODO: 为什么这里又不需要invoke_signed
         invoke(
             mint_ix,
             &[
