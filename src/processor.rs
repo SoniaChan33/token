@@ -11,7 +11,7 @@ use solana_program::{
     pubkey::Pubkey,
     rent::Rent,
 };
-use spl_token::instruction::initialize_mint;
+use spl_token::instruction::{initialize_mint, mint_to, mint_to_checked};
 use spl_token::state::Mint;
 
 // 引用自定义的tokeninstruction模块
@@ -55,6 +55,7 @@ impl Process {
         msg!("Creating mint account...");
         msg!("mint_account: {:?}", mint_account.key);
 
+        // TODO 不懂ivoke是干嘛的
         invoke(
             &system_instruction::create_account(
                 payer.key,
@@ -94,7 +95,65 @@ impl Process {
     }
     fn mint_tokens(accounts: &[AccountInfo], amount: u64) -> ProgramResult {
         // 这里可以实现铸币的逻辑
-        println!("Minted {} tokens successfully", amount);
+        let account_iter = &mut accounts.iter();
+
+        // 创建铸币账户
+        let mint_account = next_account_info(account_iter)?;
+        let associated_token_account = next_account_info(account_iter)?;
+        // TODO 这个到底是什么账户
+        let rent_sysvar = next_account_info(account_iter)?;
+        let payer = next_account_info(account_iter)?;
+        let system_program = next_account_info(account_iter)?;
+        let token_program = next_account_info(account_iter)?;
+        let associated_token_program = next_account_info(account_iter)?;
+
+        msg!("ATA: {:?}", associated_token_account);
+        if associated_token_account.lamports() == 0 {
+            msg!("Creating associated token account...");
+            let create_ata_ix: &solana_program::instruction::Instruction =
+                &spl_associated_token_account::instruction::create_associated_token_account(
+                    payer.key,
+                    payer.key,
+                    mint_account.key,
+                    token_program.key,
+                );
+
+            // 创建ATA账户
+            invoke(
+                create_ata_ix,
+                &[
+                    payer.clone(),
+                    associated_token_account.clone(),
+                    mint_account.clone(),
+                    token_program.clone(),
+                    system_program.clone(),
+                    associated_token_program.clone(),
+                ],
+            )?;
+        }
+
+        msg!("Minting {} tokens to ata", amount);
+        let mint_ix = &mint_to(
+            token_program.key,
+            mint_account.key,
+            associated_token_account.key,
+            payer.key,
+            &[payer.key],
+            amount,
+        )?;
+        // TODO: 为什么这里又不需要invoke_signed
+        invoke(
+            mint_ix,
+            &[
+                mint_account.clone(),
+                associated_token_account.clone(),
+                payer.clone(),
+                token_program.clone(),
+            ],
+        )?;
+
+        msg!("Minting {} tokens to ata,success!", amount);
+
         Ok(())
     }
 }
