@@ -238,6 +238,190 @@ solana program deploy target/deploy/your_program.so
 - 创建Token：发送`CreateToken`指令
 - 铸造Token：发送`Mint`指令
 
+## TODO问题详解
+
+### 1. "TODO 不懂invoke是干嘛的"
+
+**invoke函数的作用：**
+
+`invoke`是Solana中**跨程序调用**（Cross-Program Invocation, CPI）的核心机制。当您的程序需要调用另一个程序的功能时，就需要使用`invoke`。
+
+**为什么需要invoke：**
+```rust
+// 错误的做法 - 直接调用不会生效
+system_instruction::create_account(...);  // 这只是创建指令，不会执行
+
+// 正确的做法 - 使用invoke执行指令
+invoke(
+    &system_instruction::create_account(...),  // 要执行的指令
+    &[account1, account2, ...]                 // 涉及的账户
+)?;
+```
+
+**invoke vs invoke_signed的区别：**
+
+1. **invoke**：
+   - 用于普通的跨程序调用
+   - 需要所有必要的签名已经存在于交易中
+   - 适用于用户已经授权的操作
+
+2. **invoke_signed**：
+   - 用于程序派生地址（PDA）的签名授权
+   - 程序可以代表PDA进行签名
+   - 适用于程序内部创建的账户操作
+
+**实际应用场景：**
+```rust
+// 场景1：用户创建账户 - 使用invoke
+invoke(
+    &system_instruction::create_account(...),
+    &[payer, new_account, system_program]  // payer已经在交易中签名
+)?;
+
+// 场景2：程序代表PDA签名 - 使用invoke_signed
+invoke_signed(
+    &some_instruction,
+    &[pda_account, other_account],
+    &[&[b"seed", &[bump]]]  // PDA的种子，程序代为签名
+)?;
+```
+
+### 2. "TODO 这个到底是什么账户" (rent_sysvar)
+
+**rent_sysvar的作用：**
+
+`rent_sysvar`是Solana的**租金系统变量账户**，它包含了网络的租金参数信息。
+
+**Solana租金机制：**
+- 在Solana上，所有账户都需要支付"租金"来保持存活
+- 如果账户余额足够支付2年的租金，则账户免租金
+- `rent_sysvar`包含了计算租金所需的参数
+
+**为什么需要rent_sysvar：**
+
+```rust
+// 获取租金计算参数
+let rent = Rent::from_account_info(rent_sysvar)?;
+let minimum_balance = rent.minimum_balance(account_size);
+
+// 或者直接使用默认值（更常见）
+let minimum_balance = Rent::default().minimum_balance(Mint::LEN);
+```
+
+**在您的代码中的使用：**
+```rust
+// create_token函数中
+invoke(
+    &system_instruction::create_account(
+        payer.key,
+        mint_account.key,
+        Rent::default().minimum_balance(Mint::LEN),  // 这里计算了租金免额
+        Mint::LEN as u64,
+        token_program.key,
+    ),
+    // ...
+)?;
+```
+
+**实际上，在现代Solana开发中：**
+- 大多数情况下可以使用`Rent::default()`而不需要传递rent_sysvar
+- rent_sysvar主要用于需要精确租金计算的场景
+- 您的代码中可以移除这个参数，除非有特殊需求
+
+### 3. "TODO: 为什么这里又不需要invoke_signed"
+
+这个问题涉及到**权限验证**的概念：
+
+**铸币权限分析：**
+
+```rust
+// 在create_token中设置的铸币权限
+let mint_init_ix = &initialize_mint(
+    token_program.key,
+    mint_account.key,
+    mint_authority.key,  // 这里设置payer为铸币权限者
+    None,
+    decimals,
+)?;
+```
+
+**为什么不需要invoke_signed：**
+
+1. **权限归属**：
+   - 在创建Token时，`mint_authority`被设置为`payer`
+   - `payer`是交易的发起者，已经在交易中提供了签名
+   - 因此不需要程序代为签名
+
+2. **签名验证流程**：
+```rust
+// mint_to指令会检查：
+// 1. payer是否是mint_authority？ ✓ (在create_token中设置的)
+// 2. payer是否在交易中签名？ ✓ (用户发起交易时签名)
+// 3. 因此可以直接使用invoke
+invoke(mint_ix, &[...])?;
+```
+
+3. **对比需要invoke_signed的情况**：
+```rust
+// 如果mint_authority是PDA，则需要invoke_signed
+let (mint_authority_pda, bump) = Pubkey::find_program_address(
+    &[b"mint_authority"],
+    program_id
+);
+
+// 这种情况下铸币需要invoke_signed
+invoke_signed(
+    mint_ix,
+    &[...],
+    &[&[b"mint_authority", &[bump]]]  // 程序代PDA签名
+)?;
+```
+
+### 4. 改进建议
+
+基于这些理解，您可以对代码进行一些优化：
+
+```rust
+// 1. 简化rent_sysvar的使用
+fn create_token(accounts: &[AccountInfo], decimals: u8) -> ProgramResult {
+    let account_iter = &mut accounts.iter();
+    let mint_account = next_account_info(account_iter)?;
+    let mint_authority = next_account_info(account_iter)?;
+    let payer = next_account_info(account_iter)?;
+    // let rent_sysvar = next_account_info(account_iter)?;  // 可以移除
+    let system_program = next_account_info(account_iter)?;
+    let token_program = next_account_info(account_iter)?;
+    
+    // 直接使用Rent::default()
+    invoke(
+        &system_instruction::create_account(
+            payer.key,
+            mint_account.key,
+            Rent::default().minimum_balance(Mint::LEN),
+            Mint::LEN as u64,
+            token_program.key,
+        ),
+        &[mint_account.clone(), payer.clone(), system_program.clone()],
+    )?;
+    
+    // initialize_mint也不需要rent_sysvar
+    let mint_init_ix = &initialize_mint(
+        token_program.key,
+        mint_account.key,
+        mint_authority.key,
+        None,
+        decimals,
+    )?;
+    
+    invoke(  // 这里用invoke就够了，不需要invoke_signed
+        mint_init_ix,
+        &[mint_account.clone(), rent_sysvar.clone(), token_program.clone()],
+    )?;
+    
+    Ok(())
+}
+```
+
 ## 总结
 
 这个SPL Token合约项目实现了Token生命周期的核心功能，代码结构清晰，错误处理完善。项目展示了Solana程序开发的标准模式，包括指令路由、账户管理、跨程序调用等核心概念。
